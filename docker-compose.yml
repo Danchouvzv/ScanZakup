@@ -1,0 +1,166 @@
+version: '3.8'
+
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: scanzakup_postgres
+    environment:
+      POSTGRES_DB: scanzakup
+      POSTGRES_USER: scanzakup
+      POSTGRES_PASSWORD: scanzakup_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/pgdata
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scanzakup -d scanzakup"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and Celery
+  redis:
+    image: redis:7-alpine
+    container_name: scanzakup_redis
+    command: redis-server --appendonly yes --requirepass redis_password
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scanzakup_backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://scanzakup:scanzakup_password@postgres:5432/scanzakup
+      - REDIS_URL=redis://:redis_password@redis:6379/0
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - API_V1_STR=/api/v1
+      - PROJECT_NAME=ScanZakup
+      - FIRST_SUPERUSER=admin@scanzakup.kz
+      - FIRST_SUPERUSER_PASSWORD=admin123
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+      - backend_exports:/app/exports
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scanzakup_celery_worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://scanzakup:scanzakup_password@postgres:5432/scanzakup
+      - REDIS_URL=redis://:redis_password@redis:6379/0
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ENVIRONMENT=development
+      - DEBUG=true
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+      - backend
+    restart: unless-stopped
+    command: celery -A app.ingest_workers.celery_app worker --loglevel=info --concurrency=2
+
+  # Celery Beat (Scheduler)
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scanzakup_celery_beat
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://scanzakup:scanzakup_password@postgres:5432/scanzakup
+      - REDIS_URL=redis://:redis_password@redis:6379/0
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ENVIRONMENT=development
+      - DEBUG=true
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+      - backend
+    restart: unless-stopped
+    command: celery -A app.ingest_workers.celery_app beat --loglevel=info
+
+  # Celery Flower (Monitoring)
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scanzakup_flower
+    environment:
+      - REDIS_URL=redis://:redis_password@redis:6379/0
+      - FLOWER_BROKER=redis://:redis_password@redis:6379/0
+      - FLOWER_BACKEND=redis://:redis_password@redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    command: celery -A app.ingest_workers.celery_app flower --port=5555
+
+  # PgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:7
+    container_name: scanzakup_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@scanzakup.kz
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_logs:
+    driver: local
+  backend_exports:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  default:
+    name: scanzakup_network 
