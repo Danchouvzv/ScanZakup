@@ -1,21 +1,23 @@
 """
-SQLAlchemy models for ScanZakup application.
-
-All database models following the Goszakup API schema.
+Database models for ScanZakup.
 """
 
-from app.models.base import Base
-from app.models.trd_buy import TrdBuy
-from app.models.lot import Lot
-from app.models.contract import Contract
-from app.models.participant import Participant
-from app.models.raw_data import RawData
+# Import all models for proper SQLAlchemy registration
+from .base import BaseModel
+from .trd_buy import Procurement 
+from .lot import Lot
+from .contract import Contract
+from .participant import Participant
+from .raw_data import RawDataTrdBuy, RawDataLot, RawDataContract, RawDataParticipant
 
 __all__ = [
-    "Base",
-    "TrdBuy", 
+    "BaseModel",
+    "Procurement", 
     "Lot",
     "Contract",
     "Participant",
-    "RawData",
+    "RawDataTrdBuy",
+    "RawDataLot", 
+    "RawDataContract",
+    "RawDataParticipant",
 ] 

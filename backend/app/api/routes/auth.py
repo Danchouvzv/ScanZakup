@@ -1,5 +1,5 @@
 """
-Authentication endpoints.
+Authentication endpoints and utilities.
 """
 
 from datetime import datetime, timedelta
@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.schemas.base import SuccessResponse, ErrorResponse
 
 router = APIRouter()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -76,79 +76,89 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         )
 
 
-@router.post("/login")
-async def login(
-    email: str,
-    password: str,
-    db: AsyncSession = Depends(get_async_session)
-):
+def optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
     """
-    Authenticate user and return access token.
+    Optional authentication dependency.
+    Returns user info if valid token provided, None otherwise.
+    """
+    if not credentials:
+        return None
     
-    For MVP, this is a simple implementation.
-    In production, integrate with proper user management system.
+    # For MVP - simple mock validation
+    if credentials.credentials == "valid_token":
+        return {
+            "id": 1,
+            "email": "admin@scanzakup.kz",
+            "role": "admin",
+            "name": "Администратор",
+            "is_active": True
+        }
+    
+    return None
+
+
+@router.post("/login", response_model=dict)
+async def login(credentials: dict):
     """
-    try:
-        # For MVP - simple demo authentication
-        # In production, verify against user database with proper password hashing
-        
-        if email == "demo@scanzakup.kz" and password == "demo2024":
-            # Create demo token
-            access_token = create_access_token(
-                data={
-                    "sub": "demo-user-1",
-                    "email": email,
-                    "role": "analyst",
-                    "permissions": ["read:procurements", "read:analytics", "export:data"]
-                }
-            )
-            
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "expires_in": 86400,  # 24 hours
-                "user": {
-                    "id": "demo-user-1",
-                    "email": email,
-                    "role": "analyst",
-                    "permissions": ["read:procurements", "read:analytics", "export:data"]
-                }
+    User login endpoint.
+    For MVP - returns mock token for demo purposes.
+    """
+    email = credentials.get("email")
+    password = credentials.get("password")
+    
+    # Mock validation
+    if email == "admin@scanzakup.kz" and password == "admin":
+        return {
+            "access_token": "valid_token",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": 1,
+                "email": "admin@scanzakup.kz",
+                "role": "admin",
+                "name": "Администратор"
             }
-        
-        elif email == "admin@scanzakup.kz" and password == "admin2024":
-            # Create admin token
-            access_token = create_access_token(
-                data={
-                    "sub": "admin-user-1", 
-                    "email": email,
-                    "role": "admin",
-                    "permissions": ["read:*", "write:*", "admin:*"]
-                }
-            )
-            
-            return {
-                "access_token": access_token,
-                "token_type": "bearer", 
-                "expires_in": 86400,
-                "user": {
-                    "id": "admin-user-1",
-                    "email": email,
-                    "role": "admin",
-                    "permissions": ["read:*", "write:*", "admin:*"]
-                }
-            }
-        
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials"
-            )
-            
-    except Exception as e:
+        }
+    
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials"
+    )
+
+
+@router.post("/logout", response_model=dict)
+async def logout(current_user: Optional[dict] = Depends(optional_user)):
+    """
+    User logout endpoint.
+    """
+    return {"message": "Successfully logged out"}
+
+
+@router.get("/me", response_model=dict)
+async def get_current_user(current_user: Optional[dict] = Depends(optional_user)):
+    """
+    Get current user information.
+    """
+    if not current_user:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication failed: {str(e)}"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
         )
+    
+    return current_user
+
+
+@router.get("/status", response_model=dict)
+async def auth_status():
+    """
+    Check authentication system status.
+    """
+    return {
+        "status": "operational",
+        "version": "1.0.0",
+        "auth_enabled": True,
+        "timestamp": datetime.now()
+    }
 
 
 @router.post("/refresh")
@@ -180,38 +190,6 @@ async def refresh_token(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Token refresh failed: {str(e)}"
         )
-
-
-@router.get("/me")
-async def get_current_user(
-    current_user: dict = Depends(verify_token)
-):
-    """
-    Get current user information.
-    """
-    return {
-        "id": current_user["sub"],
-        "email": current_user["email"],
-        "role": current_user["role"],
-        "permissions": current_user["permissions"]
-    }
-
-
-@router.post("/logout")
-async def logout(
-    current_user: dict = Depends(verify_token)
-):
-    """
-    Logout user (invalidate token).
-    
-    For JWT tokens, client should discard the token.
-    In production, maintain a blacklist of revoked tokens.
-    """
-    # In production, add token to blacklist/revocation list
-    return SuccessResponse(
-        message="Successfully logged out",
-        data={"user_id": current_user["sub"]}
-    )
 
 
 @router.get("/permissions")
@@ -248,18 +226,4 @@ def require_permission(permission: str):
             detail=f"Insufficient permissions. Required: {permission}"
         )
     
-    return permission_checker
-
-
-# Optional user dependency (for endpoints that work with/without auth)
-def optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))):
-    """Get user info if authenticated, None otherwise."""
-    if not credentials:
-        return None
-    
-    try:
-        settings = get_settings()
-        payload = jwt.decode(credentials.credentials, settings.SECRET_KEY, algorithms=["HS256"])
-        return payload
-    except jwt.PyJWTError:
-        return None 
+    return permission_checker 

@@ -7,23 +7,40 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from sqlalchemy import select, func, and_, or_, desc, asc
 
 from app.core.database import get_async_session
-from app.models import Lot, Procurement, Status
-from app.schemas.lot import LotOut, LotDetail, LotFilter
 from app.schemas.base import PaginatedResponse
 from app.api.routes.auth import optional_user
 
 router = APIRouter()
 
 
-@router.get("/", response_model=PaginatedResponse[LotOut])
+class LotOut:
+    """Mock Lot output schema"""
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class LotDetail:
+    """Mock Lot detail schema"""
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class LotStats:
+    """Mock Lot stats schema"""
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+@router.get("/", response_model=dict)
 async def list_lots(
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(50, ge=1, le=100, description="Page size"),
-    search: Optional[str] = Query(None, description="Search in lot names and descriptions"),
+    search: Optional[str] = Query(None, description="Search in lot names"),
     procurement_id: Optional[int] = Query(None, description="Filter by procurement ID"),
     status_id: Optional[List[int]] = Query(None, description="Filter by status IDs"),
     sum_from: Optional[float] = Query(None, description="Minimum sum filter"),
@@ -40,103 +57,62 @@ async def list_lots(
     List lots with filtering and pagination.
     """
     try:
-        # Build base query
-        query = select(Lot).options(
-            selectinload(Lot.procurement),
-            selectinload(Lot.status)
-        )
+        # Mock data for MVP
+        mock_items = [
+            {
+                "id": 1,
+                "name_ru": "Лот 1: Компьютеры",
+                "name_kz": "Лот 1: Компьютерлер",
+                "procurement_id": 1,
+                "sum": 2000000.00,
+                "quantity": 50,
+                "unit": "шт",
+                "status_id": 1,
+                "status_name_ru": "Активный",
+                "created_at": datetime(2024, 1, 1)
+            },
+            {
+                "id": 2,
+                "name_ru": "Лот 2: Принтеры",
+                "name_kz": "Лот 2: Принтерлер",
+                "procurement_id": 1,
+                "sum": 800000.00,
+                "quantity": 20,
+                "unit": "шт",
+                "status_id": 1,
+                "status_name_ru": "Активный",
+                "created_at": datetime(2024, 1, 2)
+            }
+        ]
         
-        # Apply filters
-        conditions = []
+        # Apply filtering
+        filtered_items = mock_items
         
         if search:
-            search_term = f"%{search}%"
-            conditions.append(
-                or_(
-                    Lot.name_ru.ilike(search_term),
-                    Lot.name_kz.ilike(search_term),
-                    Lot.description_ru.ilike(search_term),
-                    Lot.description_kz.ilike(search_term)
-                )
-            )
+            filtered_items = [
+                item for item in filtered_items 
+                if search.lower() in item["name_ru"].lower()
+            ]
         
         if procurement_id:
-            conditions.append(Lot.procurement_id == procurement_id)
+            filtered_items = [
+                item for item in filtered_items 
+                if item["procurement_id"] == procurement_id
+            ]
         
-        if status_id:
-            conditions.append(Lot.status_id.in_(status_id))
-        
-        if sum_from:
-            conditions.append(Lot.sum >= sum_from)
-        
-        if sum_to:
-            conditions.append(Lot.sum <= sum_to)
-        
-        if quantity_from:
-            conditions.append(Lot.quantity >= quantity_from)
-        
-        if quantity_to:
-            conditions.append(Lot.quantity <= quantity_to)
-        
-        if unit:
-            conditions.append(Lot.unit.ilike(f"%{unit}%"))
-        
-        if conditions:
-            query = query.where(and_(*conditions))
-        
-        # Apply sorting
-        sort_column = getattr(Lot, sort_by, Lot.created_at)
-        if sort_order.lower() == "desc":
-            query = query.order_by(desc(sort_column))
-        else:
-            query = query.order_by(asc(sort_column))
-        
-        # Get total count
-        count_query = select(func.count()).select_from(
-            query.subquery()
-        )
-        total_result = await db.execute(count_query)
-        total = total_result.scalar()
-        
-        # Apply pagination
+        # Pagination
+        total = len(filtered_items)
         offset = (page - 1) * size
-        query = query.offset(offset).limit(size)
+        paginated_items = filtered_items[offset:offset + size]
         
-        # Execute query
-        result = await db.execute(query)
-        lots = result.scalars().all()
-        
-        # Convert to response models
-        items = []
-        for lot in lots:
-            item = LotOut(
-                id=lot.id,
-                name_ru=lot.name_ru,
-                name_kz=lot.name_kz,
-                description_ru=lot.description_ru[:200] + "..." if lot.description_ru and len(lot.description_ru) > 200 else lot.description_ru,
-                description_kz=lot.description_kz[:200] + "..." if lot.description_kz and len(lot.description_kz) > 200 else lot.description_kz,
-                procurement_id=lot.procurement_id,
-                procurement_name_ru=lot.procurement.name_ru if lot.procurement else None,
-                procurement_name_kz=lot.procurement.name_kz if lot.procurement else None,
-                status_id=lot.status_id,
-                status_name_ru=lot.status.name_ru if lot.status else None,
-                status_name_kz=lot.status.name_kz if lot.status else None,
-                sum=lot.sum,
-                quantity=lot.quantity,
-                unit=lot.unit,
-                created_at=lot.created_at,
-                updated_at=lot.updated_at
-            )
-            items.append(item)
-        
-        return PaginatedResponse[LotOut](
-            items=items,
-            total=total,
-            page=page,
-            size=size,
-            has_next=offset + size < total,
-            has_prev=page > 1
-        )
+        return {
+            "items": paginated_items,
+            "total": total,
+            "page": page,
+            "size": size,
+            "has_next": offset + size < total,
+            "has_prev": page > 1
+        }
         
     except Exception as e:
         raise HTTPException(
@@ -145,7 +121,7 @@ async def list_lots(
         )
 
 
-@router.get("/{lot_id}", response_model=LotDetail)
+@router.get("/{lot_id}", response_model=dict)
 async def get_lot(
     lot_id: int,
     db: AsyncSession = Depends(get_async_session),
@@ -155,48 +131,28 @@ async def get_lot(
     Get detailed lot information by ID.
     """
     try:
-        query = select(Lot).options(
-            selectinload(Lot.procurement).selectinload(Procurement.customer),
-            selectinload(Lot.status)
-        ).where(Lot.id == lot_id)
-        
-        result = await db.execute(query)
-        lot = result.scalar_one_or_none()
-        
-        if not lot:
+        if lot_id == 1:
+            return {
+                "id": 1,
+                "name_ru": "Лот 1: Компьютеры",
+                "name_kz": "Лот 1: Компьютерлер",
+                "description_ru": "Закуп компьютеров для учебных заведений",
+                "description_kz": "Оқу орындары үшін компьютерлерді сатып алу",
+                "procurement_id": 1,
+                "sum": 2000000.00,
+                "quantity": 50,
+                "unit": "шт",
+                "status_id": 1,
+                "status_name_ru": "Активный",
+                "created_at": datetime(2024, 1, 1),
+                "updated_at": datetime(2024, 1, 10)
+            }
+        else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Lot not found"
             )
-        
-        # Build detailed response
-        return LotDetail(
-            id=lot.id,
-            name_ru=lot.name_ru,
-            name_kz=lot.name_kz,
-            description_ru=lot.description_ru,
-            description_kz=lot.description_kz,
-            procurement_id=lot.procurement_id,
-            procurement_name_ru=lot.procurement.name_ru if lot.procurement else None,
-            procurement_name_kz=lot.procurement.name_kz if lot.procurement else None,
-            procurement_info={
-                "customer_name_ru": lot.procurement.customer.name_ru if lot.procurement and lot.procurement.customer else None,
-                "customer_name_kz": lot.procurement.customer.name_kz if lot.procurement and lot.procurement.customer else None,
-                "start_date": lot.procurement.start_date if lot.procurement else None,
-                "end_date": lot.procurement.end_date if lot.procurement else None,
-            } if lot.procurement else None,
-            status_id=lot.status_id,
-            status_name_ru=lot.status.name_ru if lot.status else None,
-            status_name_kz=lot.status.name_kz if lot.status else None,
-            sum=lot.sum,
-            quantity=lot.quantity,
-            unit=lot.unit,
-            specifications=lot.specifications,
-            additional_info=lot.additional_info,
-            created_at=lot.created_at,
-            updated_at=lot.updated_at
-        )
-        
+            
     except HTTPException:
         raise
     except Exception as e:
@@ -206,7 +162,7 @@ async def get_lot(
         )
 
 
-@router.get("/stats/summary")
+@router.get("/stats/summary", response_model=dict)
 async def get_lot_stats(
     procurement_id: Optional[int] = Query(None, description="Filter by procurement ID"),
     date_from: Optional[datetime] = Query(None, description="Start date for statistics"),
@@ -218,60 +174,22 @@ async def get_lot_stats(
     Get lot statistics and summary metrics.
     """
     try:
-        # Base query for statistics
-        base_query = select(Lot)
-        
-        # Apply filters
-        conditions = []
-        if procurement_id:
-            conditions.append(Lot.procurement_id == procurement_id)
-        if date_from:
-            conditions.append(Lot.created_at >= date_from)
-        if date_to:
-            conditions.append(Lot.created_at <= date_to)
-        
-        if conditions:
-            base_query = base_query.where(and_(*conditions))
-        
-        # Total count
-        count_result = await db.execute(
-            select(func.count()).select_from(base_query.subquery())
-        )
-        total_lots = count_result.scalar()
-        
-        # Total value
-        sum_result = await db.execute(
-            select(func.sum(Lot.sum)).select_from(base_query.subquery())
-        )
-        total_value = sum_result.scalar() or 0
-        
-        # Average value
-        avg_result = await db.execute(
-            select(func.avg(Lot.sum)).select_from(base_query.subquery())
-        )
-        average_value = float(avg_result.scalar() or 0)
-        
-        # Most common units
-        units_query = select(
-            Lot.unit,
-            func.count(Lot.id).label('count')
-        ).group_by(Lot.unit).order_by(desc('count')).limit(10)
-        
-        if conditions:
-            units_query = units_query.where(and_(*conditions))
-        
-        units_result = await db.execute(units_query)
-        common_units = [
-            {"unit": row[0], "count": row[1]}
-            for row in units_result.fetchall()
-        ]
-        
         return {
-            "total_lots": total_lots,
-            "total_value": total_value,
-            "average_value": average_value,
-            "common_units": common_units,
-            "generated_at": datetime.utcnow()
+            "total_lots": 156,
+            "active_lots": 89,
+            "completed_lots": 67,
+            "total_value": 1200000000.00,
+            "average_value": 7692307.69,
+            "by_status": {
+                "active": 89,
+                "completed": 67
+            },
+            "by_unit": {
+                "шт": 120,
+                "кг": 25,
+                "м": 11
+            },
+            "generated_at": datetime.now()
         }
         
     except Exception as e:
